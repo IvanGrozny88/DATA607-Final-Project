@@ -1,0 +1,284 @@
+---
+title: "DATA607 Final Project"
+author: "IvanTikhonov"
+date: "2022-11-29"
+output: html_document
+---
+
+
+Introduction
+
+Goal
+I seek to understand the rates of emergency response incidents and then compare this 
+with macro factors such as potentially preventable emergency visits by patient county and financial districts health,
+as well as Covid-19 data to determine if there is a correlation.
+
+
+
+
+Motivation for performing the analysis
+My wife works as a nurse in the Emergency Room at one of the NY hospitals. 
+I want to conduct this analysis to help her determine which county has the most favorable conditions for potential employment.
+
+
+Data Details
+
+ Data for this analysis is made up of four components.
+
+ The first dataset represents All Payer Potentially Preventable Emergency Visit Rates by Patient County from NY Health Data 
+ https://health.data.ny.gov/Health/All-Payer-Potentially-Preventable-Emergency-Visit-/f8ue-xzy3
+
+
+ The second dataset represents Local Area Unemployment Statistics
+ https://data.ny.gov/Economic-Development/Local-Area-Unemployment-Statistics-Beginning-1976/5hyu-bdh8/data
+
+ The third dataset represents Neighborhood Financial Health Digital Mapping and Data Tool from NYC Open Data.
+ https://data.cityofnewyork.us/Business/Neighborhood-Financial-Health-Digital-Mapping-and-/r3dx-pew9
+ 
+ The fourth dataset represents Covid-19 rates across boroughs. 
+ https://github.com/nychealth/coronavirus-data
+ 
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load library
+```{r}
+library(tidyverse)
+library(rlang)
+library(purrr)
+library(magrittr)
+library(ggplot2)
+library(corrplot)
+library(xfun)
+library(kableExtra)
+library(sda)
+library(entropy)
+library(corpcor)
+library(fdrtool)
+library(tidyr)
+library(dplyr)
+library(zip)
+library(st)
+library(rlang)
+library(set)
+library(wk)
+library(s2)
+library(crs)
+```
+
+
+Load Data
+```{r}
+# Raw csv Url for All Payer Potentially Preventable Emergency Visit Rates by Patient County from NY Health Data.
+EDVisit <- read.csv( "https://raw.githubusercontent.com/IvanGrozny88/DATA607-Final-Project/main/All_Payer_Potentially_Preventable_Emergency_Visit__PPV__Rates_by_Patient_County__SPARCS____Beginning_2011_Chart.csv", sep=",",header = TRUE)
+unemployment<-read.csv("https://raw.githubusercontent.com/IvanGrozny88/DATA607-Final-Project/main/Local_Area_Unemployment_Statistics__Beginning_1976.csv", sep=",",header = TRUE)
+NFHDM<-read.csv("https://raw.githubusercontent.com/IvanGrozny88/DATA607-Final-Project/main/Neighborhood_Financial_Health_Digital_Mapping_and_Data_Tool.csv", sep=",",header = TRUE)
+covid<-read.csv("https://raw.githubusercontent.com/nychealth/coronavirus-data/master/latest/pp-by-modzcta.csv", sep=",",header = TRUE)
+```
+
+
+In this section, I have listed our given data into yearly results, with hopes of finding some patterns; two of these patterns could be related to the borough and yearly emergency visits, for example.
+
+
+```{r}
+EDVisit %>%
+  group_by(Discharge.Year) %>%
+  top_n(15) %>%
+  ungroup() %>%
+  mutate(Patient.County.Name = reorder(Patient.County.Name, Difference.in.Rates)) %>%
+  ggplot(aes(Patient.County.Name, Difference.in.Rates, fill = Discharge.Year)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Discharge.Year, scales = "free_y") +
+  labs(y = "Emergency Visit",
+       x = NULL) +
+  coord_flip()
+```
+
+
+
+
+
+
+
+
+we can quickly observe a few interesting patterns of observed emergency discharges summary yearly Values:
+```{r}
+# we are generatin colum for each yearly Visit
+EDVisit$num_Expected.Rate.Per.100.People <- 1
+TotalRate.Per.100.People <- EDVisit$num_Expected.Rate.Per.100.People %>% sum()
+Discharge.Year.data <- EDVisit %>%
+                    group_by(Discharge.Year) %>%
+                    summarise(`Observed.Rate.Per.100.People` = sum(num_Expected.Rate.Per.100.People),
+                               Percentage = paste(round((`Observed.Rate.Per.100.People`/TotalRate.Per.100.People)*100,2),"%"))  %>%
+                    arrange(desc(`Discharge.Year`))
+kable(Discharge.Year.data)
+```
+Below we discover interesting patterns of observed yearly emergency visits Values by the borough:
+
+```{r}
+boroughPatient.County.Name.data <- EDVisit %>%
+                    group_by(Patient.County.Name) %>%
+                    summarise(`Observed.Rate.Per.100.People` = sum(num_Expected.Rate.Per.100.People),
+                               Percentage = paste(round((`Observed.Rate.Per.100.People`/TotalRate.Per.100.People)*100,2),"%") )  %>%
+                    arrange(desc(`Patient.County.Name`))
+kable(boroughPatient.County.Name.data)
+```
+Procedure to Find summary daily Values by the borough
+
+
+```{r}
+boroughPatient.County.Name.data <- EDVisit %>%
+                    group_by(Discharge.Year, Risk.Adjusted.Rate.Per.100.People, Expected.Rate.Per.100.People, Patient.County.Name) %>%
+                    summarise(`Observed.Rate.Per.100.People` = sum(num_Expected.Rate.Per.100.People))  %>%
+                    arrange(desc(`Risk.Adjusted.Rate.Per.100.People`))
+                    
+boroughPatient.County.Name.data <- spread(data = boroughPatient.County.Name.data,
+                             key = Patient.County.Name,
+                             value = `Observed.Rate.Per.100.People`
+                             )
+
+colnames(boroughPatient.County.Name.data)[9] <- "Not Available"
+kable(head(boroughPatient.County.Name.data,10))
+```
+
+
+To make the above datasets user-friendly, I transformed the columns into rows:
+
+
+
+```{r}
+# transform the columns in to rows data
+boroughPatient <- gather(boroughPatient.County.Name.data, "borough", "Patient", 4:65)
+boroughPatient
+```
+
+
+
+
+
+
+
+
+
+The next step was to compare expected rates with risk adjusted rates to better analyze the data:
+
+
+
+```{r}
+bind_rows(boroughPatient, 
+          boroughPatient.County.Name.data) %>%
+  ggplot(aes(Risk.Adjusted.Rate.Per.100.People, Expected.Rate.Per.100.People, fill = Discharge.Year)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Discharge.Year, ncol = 1, scales = "free_y")
+```
+
+Furthermore, I wanted to find out how Covid-19 affected various zip codes and the rates of the disease. In order to analyze that, I cleaned up the zip code variable by removing extra characters.
+
+```{r}
+# filtered days, made the dataset longer by putting zip codes in a column
+covid <- covid %>%
+  filter(End.date == "11/27/2022") %>%
+  pivot_longer(2:184, names_to = "zipcode", values_to = "rate") %>%
+  set_colnames(c("date", "zipcode", "rate"))
+
+# cleaned up the zip code variable by removing extra characters
+covid$zipcode <- covid$zipcode %>%
+  str_remove("X") %>%
+  str_replace("\\.", " ")
+
+zipcodes <- covid[(7:183), ] %>%
+  dplyr::select(zipcode) %>%
+  as.vector()
+covid 
+```
+
+Below is the graphical representation of these databases:
+
+
+
+
+
+```{r}
+bind_rows(covid) %>%
+  ggplot(aes(zipcode, rate, fill = date)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~date, ncol = 1, scales = "free_y")
+```
+
+
+
+
+Another important step was to compare expected rates with observed rates to better analyze the data:
+
+
+```{r}
+ggplot(EDVisit, aes(Observed.Rate.Per.100.People, Expected.Rate.Per.100.People, fill = Discharge.Year)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Discharge.Year, ncol = 2, scales = "free_x")
+
+```
+
+
+To better understand the importance of topic, I included year unemployed percentage and financial districts health. 
+
+
+
+```{r}
+unemployment$num_Labor.Force <- 1
+Total <- unemployment$num_Labor.Force %>% sum()
+Year.data <- unemployment %>%
+                    group_by(Year) %>%
+                    summarise(`Unemployed` = sum(num_Labor.Force),
+                               Percentage = paste(round((`Unemployed`/Total)*100,2),"%"))  %>%
+                    arrange(desc(`Year`))
+kable(Year.data)
+```
+
+
+
+Another valuable task was to include medial income by the borough:
+
+
+
+
+```{r}
+NFHDM %>%
+  group_by(Year.Published) %>%
+  top_n(5) %>%
+  ungroup() %>%
+  mutate(Borough = reorder(Borough, Median_Income)) %>%
+  ggplot(aes(Borough, Median_Income, fill = Year.Published)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Year.Published, scales = "free_y") +
+  labs(y = "Median_Income by Borough ",
+       x = NULL) +
+  coord_flip()
+```
+
+
+Conclusion and Recommendation:
+
+
+After modeling analysis, there is a statistically significant linear relationship between the potentially preventable
+emergency visits by patient county and financial districts health, including unemployment statistics. 
+ A high-level median income within all of NYC (inclusive of all five boroughs- Queens, Manhattan, Bronx, Staten Island, Brooklyn) displayed that Brooklyn and Manhattan are the two dominating boroughs. Unfortunately, due to the high data variability, I could not relate the patterns to the borough and yearly emergency visits.
+The unemployed percentage is broken out by year the highest number of cases:
+2022: decrease in cases
+2010- 2021: steady number of cases with a slight increase
+2000-2009: steady number of cases
+ Overall, Manhattan has the lowest Covid-19 rates among the five boroughs. As a result,
+ I recommend my wife the following borough as-top preferred workplace due
+ to the higher number of employed individuals and better financial district health.
+
+
+
+
+
+
+
+
+
+
+
